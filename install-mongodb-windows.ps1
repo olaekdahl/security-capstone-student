@@ -60,11 +60,34 @@ function Install-Winget {
     Download-File $wingetUrl $wingetPath "winget"
     
     Write-Host "Installing dependencies..."
-    Add-AppxPackage -Path $vcLibsPath
-    Add-AppxPackage -Path $uiXamlPath
+    # Use -ErrorAction SilentlyContinue for dependencies that might already be installed or have issues
+    try {
+      Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop
+      Write-Host "  VCLibs installed." -ForegroundColor Green
+    } catch {
+      Write-Host "  VCLibs: $_" -ForegroundColor Yellow
+    }
+    
+    try {
+      Add-AppxPackage -Path $uiXamlPath -ErrorAction Stop
+      Write-Host "  UI.Xaml installed." -ForegroundColor Green
+    } catch {
+      Write-Host "  UI.Xaml skipped (may already be installed or not required): $_" -ForegroundColor Yellow
+    }
     
     Write-Host "Installing winget..."
-    Add-AppxPackage -Path $wingetPath
+    try {
+      Add-AppxPackage -Path $wingetPath -ForceUpdateFromAnyVersion
+      Write-Host "  winget installed." -ForegroundColor Green
+    } catch {
+      # If Add-AppxPackage fails, try registering the existing package
+      Write-Host "  Standard install failed, trying alternate method..." -ForegroundColor Yellow
+      $wingetPackage = Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -ErrorAction SilentlyContinue
+      if (-not $wingetPackage) {
+        throw "Failed to install winget: $_"
+      }
+      Write-Host "  winget package found." -ForegroundColor Green
+    }
     
     # Refresh PATH so winget is available
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
