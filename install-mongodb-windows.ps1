@@ -10,14 +10,79 @@ function Assert-Admin {
   if (-not $isAdmin) { throw "Run this script as Administrator." }
 }
 
-function Assert-Command($name) {
-  if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
-    throw "Missing required command: $name"
+function Install-Winget {
+  Write-Host "winget not found. Installing winget (App Installer)..."
+  
+  # Create temp directory for downloads
+  $tempDir = Join-Path $env:TEMP "winget-install"
+  New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+  
+  try {
+    # Download dependencies and winget
+    $vcLibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
+    $uiXamlUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
+    $wingetUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
+    $licenseUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/License1.xml"
+    
+    $vcLibsPath = Join-Path $tempDir "Microsoft.VCLibs.x64.14.00.Desktop.appx"
+    $uiXamlPath = Join-Path $tempDir "Microsoft.UI.Xaml.2.8.x64.appx"
+    $wingetPath = Join-Path $tempDir "Microsoft.DesktopAppInstaller.msixbundle"
+    $licensePath = Join-Path $tempDir "License1.xml"
+    
+    Write-Host "Downloading VCLibs dependency..."
+    Invoke-WebRequest -Uri $vcLibsUrl -OutFile $vcLibsPath -UseBasicParsing
+    
+    Write-Host "Downloading UI.Xaml dependency..."
+    Invoke-WebRequest -Uri $uiXamlUrl -OutFile $uiXamlPath -UseBasicParsing
+    
+    Write-Host "Downloading winget..."
+    Invoke-WebRequest -Uri $wingetUrl -OutFile $wingetPath -UseBasicParsing
+    
+    Write-Host "Downloading license..."
+    Invoke-WebRequest -Uri $licenseUrl -OutFile $licensePath -UseBasicParsing
+    
+    Write-Host "Installing dependencies..."
+    Add-AppxPackage -Path $vcLibsPath
+    Add-AppxPackage -Path $uiXamlPath
+    
+    Write-Host "Installing winget..."
+    Add-AppxProvisionedPackage -Online -PackagePath $wingetPath -LicensePath $licensePath | Out-Null
+    
+    # Refresh PATH so winget is available
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    
+    # Give it a moment to register
+    Start-Sleep -Seconds 3
+    
+    # Verify installation
+    if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) {
+      # Try to find winget in the WindowsApps folder
+      $wingetExe = Get-ChildItem -Path "$env:ProgramFiles\WindowsApps" -Filter "winget.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+      if ($wingetExe) {
+        $env:Path += ";" + $wingetExe.DirectoryName
+      } else {
+        throw "winget installation completed but winget command not found. Please restart your terminal or computer and try again."
+      }
+    }
+    
+    Write-Host "winget installed successfully!" -ForegroundColor Green
+  }
+  finally {
+    # Cleanup temp files
+    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Ensure-Winget {
+  if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) {
+    Install-Winget
+  } else {
+    Write-Host "winget is already installed."
   }
 }
 
 Assert-Admin
-Assert-Command "winget"
+Ensure-Winget
 
 Write-Host "Installing MongoDB Community Server..."
 winget install --id MongoDB.Server -e --accept-package-agreements --accept-source-agreements
