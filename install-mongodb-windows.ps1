@@ -77,16 +77,22 @@ function Install-Winget {
     
     Write-Host "Installing winget..."
     try {
-      Add-AppxPackage -Path $wingetPath -ForceUpdateFromAnyVersion
+      Add-AppxPackage -Path $wingetPath
       Write-Host "  winget installed." -ForegroundColor Green
     } catch {
-      # If Add-AppxPackage fails, try registering the existing package
-      Write-Host "  Standard install failed, trying alternate method..." -ForegroundColor Yellow
+      # Check if it's already installed
       $wingetPackage = Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -ErrorAction SilentlyContinue
-      if (-not $wingetPackage) {
-        throw "Failed to install winget: $_"
+      if ($wingetPackage) {
+        Write-Host "  winget already installed (version: $($wingetPackage.Version))." -ForegroundColor Green
+      } else {
+        # Try with -ForceApplicationShutdown for older systems
+        try {
+          Add-AppxPackage -Path $wingetPath -ForceApplicationShutdown
+          Write-Host "  winget installed (with force)." -ForegroundColor Green
+        } catch {
+          throw "Failed to install winget: $_"
+        }
       }
-      Write-Host "  winget package found." -ForegroundColor Green
     }
     
     # Refresh PATH so winget is available
