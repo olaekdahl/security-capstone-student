@@ -20,6 +20,31 @@ function Install-Winget {
   $tempDir = Join-Path $env:TEMP "winget-install"
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
   
+  # Helper function for robust downloads with retry
+  function Download-File($url, $outPath, $description) {
+    $maxRetries = 3
+    for ($i = 1; $i -le $maxRetries; $i++) {
+      try {
+        Write-Host "Downloading $description (attempt $i of $maxRetries)..."
+        # Use WebClient for more reliable large file downloads
+        $webClient = New-Object System.Net.WebClient
+        $webClient.DownloadFile($url, $outPath)
+        Write-Host "  Downloaded successfully." -ForegroundColor Green
+        return
+      }
+      catch {
+        Write-Host "  Download failed: $_" -ForegroundColor Yellow
+        if ($i -eq $maxRetries) {
+          throw "Failed to download $description after $maxRetries attempts."
+        }
+        Start-Sleep -Seconds 2
+      }
+      finally {
+        if ($webClient) { $webClient.Dispose() }
+      }
+    }
+  }
+  
   try {
     # Download dependencies and winget
     $vcLibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
@@ -32,17 +57,10 @@ function Install-Winget {
     $wingetPath = Join-Path $tempDir "Microsoft.DesktopAppInstaller.msixbundle"
     $licensePath = Join-Path $tempDir "License1.xml"
     
-    Write-Host "Downloading VCLibs dependency..."
-    Invoke-WebRequest -Uri $vcLibsUrl -OutFile $vcLibsPath -UseBasicParsing
-    
-    Write-Host "Downloading UI.Xaml dependency..."
-    Invoke-WebRequest -Uri $uiXamlUrl -OutFile $uiXamlPath -UseBasicParsing
-    
-    Write-Host "Downloading winget..."
-    Invoke-WebRequest -Uri $wingetUrl -OutFile $wingetPath -UseBasicParsing
-    
-    Write-Host "Downloading license..."
-    Invoke-WebRequest -Uri $licenseUrl -OutFile $licensePath -UseBasicParsing
+    Download-File $vcLibsUrl $vcLibsPath "VCLibs dependency"
+    Download-File $uiXamlUrl $uiXamlPath "UI.Xaml dependency"
+    Download-File $wingetUrl $wingetPath "winget"
+    Download-File $licenseUrl $licensePath "license"
     
     Write-Host "Installing dependencies..."
     Add-AppxPackage -Path $vcLibsPath
