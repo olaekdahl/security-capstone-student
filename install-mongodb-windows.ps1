@@ -1,8 +1,11 @@
 # install-mongodb-windows.ps1
-# Installs MongoDB Community Server via winget and starts the MongoDB service.
+# Installs MongoDB Community Server via winget (or direct MSI on Windows Server) and starts the MongoDB service.
 # Run PowerShell as Administrator.
 
 $ErrorActionPreference = "Stop"
+
+# Enable TLS 1.2 for downloads (required on older PowerShell versions)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 function Assert-Admin {
   $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -10,43 +13,80 @@ function Assert-Admin {
   if (-not $isAdmin) { throw "Run this script as Administrator." }
 }
 
+function Test-WindowsServer {
+  $os = Get-CimInstance -ClassName Win32_OperatingSystem
+  return $os.ProductType -ne 1  # 1 = Workstation, 2 = Domain Controller, 3 = Server
+}
+
+function Download-File($url, $outPath, $description) {
+  $maxRetries = 3
+  for ($i = 1; $i -le $maxRetries; $i++) {
+    try {
+      Write-Host "Downloading $description (attempt $i of $maxRetries)..."
+      $webClient = New-Object System.Net.WebClient
+      $webClient.DownloadFile($url, $outPath)
+      Write-Host "  Downloaded successfully." -ForegroundColor Green
+      return
+    }
+    catch {
+      Write-Host "  Download failed: $_" -ForegroundColor Yellow
+      if ($i -eq $maxRetries) {
+        throw "Failed to download $description after $maxRetries attempts."
+      }
+      Start-Sleep -Seconds 2
+    }
+    finally {
+      if ($webClient) { $webClient.Dispose() }
+    }
+  }
+}
+
+function Install-MongoDBDirect {
+  Write-Host "Installing MongoDB directly via MSI..." -ForegroundColor Cyan
+  
+  $tempDir = Join-Path $env:TEMP "mongodb-install"
+  New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+  
+  try {
+    # MongoDB 7.0 MSI download URL
+    $mongoVersion = "7.0.14"
+    $msiUrl = "https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$mongoVersion-signed.msi"
+    $msiPath = Join-Path $tempDir "mongodb.msi"
+    
+    Download-File $msiUrl $msiPath "MongoDB $mongoVersion MSI"
+    
+    Write-Host "Installing MongoDB (this may take a few minutes)..."
+    # Install MongoDB with default options, including service
+    $installArgs = "/i `"$msiPath`" /qn /l*v `"$tempDir\mongodb-install.log`" SHOULD_INSTALL_COMPASS=0 ADDLOCAL=ServerService"
+    $process = Start-Process -FilePath "msiexec.exe" -ArgumentList $installArgs -Wait -PassThru
+    
+    if ($process.ExitCode -ne 0) {
+      Write-Host "MSI install log:" -ForegroundColor Yellow
+      Get-Content "$tempDir\mongodb-install.log" -Tail 50 -ErrorAction SilentlyContinue
+      throw "MongoDB MSI installation failed with exit code: $($process.ExitCode)"
+    }
+    
+    Write-Host "MongoDB installed successfully!" -ForegroundColor Green
+  }
+  finally {
+    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Install-Winget {
-  Write-Host "winget not found. Installing winget (App Installer)..."
+  Write-Host "winget not found. Attempting to install winget (App Installer)..."
   
-  # Enable TLS 1.2 for downloads (required on older PowerShell versions)
-  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+  # Check if this is Windows Server - winget doesn't work well on Server
+  if (Test-WindowsServer) {
+    Write-Host "Windows Server detected. winget is not supported on Windows Server." -ForegroundColor Yellow
+    Write-Host "Will install MongoDB directly instead." -ForegroundColor Yellow
+    return $false
+  }
   
-  # Create temp directory for downloads
   $tempDir = Join-Path $env:TEMP "winget-install"
   New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
   
-  # Helper function for robust downloads with retry
-  function Download-File($url, $outPath, $description) {
-    $maxRetries = 3
-    for ($i = 1; $i -le $maxRetries; $i++) {
-      try {
-        Write-Host "Downloading $description (attempt $i of $maxRetries)..."
-        # Use WebClient for more reliable large file downloads
-        $webClient = New-Object System.Net.WebClient
-        $webClient.DownloadFile($url, $outPath)
-        Write-Host "  Downloaded successfully." -ForegroundColor Green
-        return
-      }
-      catch {
-        Write-Host "  Download failed: $_" -ForegroundColor Yellow
-        if ($i -eq $maxRetries) {
-          throw "Failed to download $description after $maxRetries attempts."
-        }
-        Start-Sleep -Seconds 2
-      }
-      finally {
-        if ($webClient) { $webClient.Dispose() }
-      }
-    }
-  }
-  
   try {
-    # Download dependencies and winget
     $vcLibsUrl = "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx"
     $uiXamlUrl = "https://github.com/microsoft/microsoft-ui-xaml/releases/download/v2.8.6/Microsoft.UI.Xaml.2.8.x64.appx"
     $wingetUrl = "https://github.com/microsoft/winget-cli/releases/latest/download/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe.msixbundle"
@@ -60,79 +100,59 @@ function Install-Winget {
     Download-File $wingetUrl $wingetPath "winget"
     
     Write-Host "Installing dependencies..."
-    # Use -ErrorAction SilentlyContinue for dependencies that might already be installed or have issues
-    try {
-      Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop
-      Write-Host "  VCLibs installed." -ForegroundColor Green
-    } catch {
-      Write-Host "  VCLibs: $_" -ForegroundColor Yellow
-    }
+    try { Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop; Write-Host "  VCLibs installed." -ForegroundColor Green } 
+    catch { Write-Host "  VCLibs: $_" -ForegroundColor Yellow }
     
-    try {
-      Add-AppxPackage -Path $uiXamlPath -ErrorAction Stop
-      Write-Host "  UI.Xaml installed." -ForegroundColor Green
-    } catch {
-      Write-Host "  UI.Xaml skipped (may already be installed or not required): $_" -ForegroundColor Yellow
-    }
+    try { Add-AppxPackage -Path $uiXamlPath -ErrorAction Stop; Write-Host "  UI.Xaml installed." -ForegroundColor Green } 
+    catch { Write-Host "  UI.Xaml skipped: $_" -ForegroundColor Yellow }
     
     Write-Host "Installing winget..."
-    try {
-      Add-AppxPackage -Path $wingetPath
-      Write-Host "  winget installed." -ForegroundColor Green
-    } catch {
-      # Check if it's already installed
-      $wingetPackage = Get-AppxPackage -Name "Microsoft.DesktopAppInstaller" -ErrorAction SilentlyContinue
-      if ($wingetPackage) {
-        Write-Host "  winget already installed (version: $($wingetPackage.Version))." -ForegroundColor Green
-      } else {
-        # Try with -ForceApplicationShutdown for older systems
-        try {
-          Add-AppxPackage -Path $wingetPath -ForceApplicationShutdown
-          Write-Host "  winget installed (with force)." -ForegroundColor Green
-        } catch {
-          throw "Failed to install winget: $_"
-        }
-      }
-    }
+    Add-AppxPackage -Path $wingetPath
+    Write-Host "  winget installed." -ForegroundColor Green
     
-    # Refresh PATH so winget is available
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-    
-    # Give it a moment to register
     Start-Sleep -Seconds 3
     
-    # Verify installation
     if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) {
-      # Try to find winget in the WindowsApps folder
       $wingetExe = Get-ChildItem -Path "$env:ProgramFiles\WindowsApps" -Filter "winget.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
       if ($wingetExe) {
         $env:Path += ";" + $wingetExe.DirectoryName
       } else {
-        throw "winget installation completed but winget command not found. Please restart your terminal or computer and try again."
+        Write-Host "winget command not found after installation." -ForegroundColor Yellow
+        return $false
       }
     }
     
     Write-Host "winget installed successfully!" -ForegroundColor Green
+    return $true
+  }
+  catch {
+    Write-Host "Failed to install winget: $_" -ForegroundColor Yellow
+    Write-Host "Will install MongoDB directly instead." -ForegroundColor Yellow
+    return $false
   }
   finally {
-    # Cleanup temp files
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
-function Ensure-Winget {
-  if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) {
-    Install-Winget
-  } else {
-    Write-Host "winget is already installed."
-  }
+# Main script
+Assert-Admin
+
+$useWinget = $false
+if (Get-Command "winget" -ErrorAction SilentlyContinue) {
+  Write-Host "winget is already installed."
+  $useWinget = $true
+} else {
+  $useWinget = Install-Winget
 }
 
-Assert-Admin
-Ensure-Winget
-
-Write-Host "Installing MongoDB Community Server..."
-winget install --id MongoDB.Server -e --accept-package-agreements --accept-source-agreements
+if ($useWinget) {
+  Write-Host "Installing MongoDB Community Server via winget..."
+  winget install --id MongoDB.Server -e --accept-package-agreements --accept-source-agreements
+} else {
+  Install-MongoDBDirect
+}
 
 Write-Host "Starting MongoDB service..."
 $svc = Get-Service -Name "MongoDB" -ErrorAction SilentlyContinue
