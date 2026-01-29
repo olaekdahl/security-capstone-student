@@ -110,6 +110,15 @@ npm run dev
 
 ## 📚 Threat Modeling Exercise
 
+> **💡 Important:** These applications are intentionally **starting points**, not production-ready systems. When creating your threat model, think beyond the current implementation:
+>
+> - **Future Features:** What functionality might be added? (e.g., payment processing, file uploads, reporting dashboards, mobile apps)
+> - **Integrations:** What external systems might this connect to? (e.g., email services, payment gateways, SSO/LDAP, third-party APIs, cloud storage)
+> - **Scale Considerations:** How would threats change with more users, data, or distributed architecture?
+> - **Real-World Context:** Consider the full lifecycle—deployment, monitoring, backups, compliance requirements
+>
+> A comprehensive threat model anticipates where the system is going, not just where it is today.
+
 Each application includes a `threat-model/` folder with templates:
 
 - **dfd.puml** — Data Flow Diagram (PlantUML)
